@@ -1,89 +1,87 @@
+
 # Load necessary libraries
-library(dplyr) # Data manipulation
-library(tidyr) # Missing data handling
+library(dplyr)   # Data manipulation
+library(tidyr)   # Data cleaning
+library(stringr) # Regex & text processing
 
-# Step 1: Simulate phenotype data
-phenotype_data <- data.frame(
-  patient_id = c(1, 2, 3, 4, 5, 6),
-  age = c(34, NA, 45, 22, 29, 50),
-  weight_kg = c(70, 85, NA, 65, 78, 90),
-  diagnosis = c("Hypertension", "Diabetes", "Hypertension", NA, "Asthma", "Diabetes"),
-  blood_pressure_mmHg = c("120/80", "140/90", NA, "110/70", "130/85", "150/95"),
-  medication = c("Lisinopril", "Metformin", "Lisinopril", "None", "Albuterol", "Metformin")
+# Example raw doctor's notes as unstructured text
+raw_notes <- c(
+  "Patient ID: 001 | Age: 56 | Weight: 81kg | BP: 140/90 | Diagnosis: Hypertension | Medications: Lisinopril 10mg daily",
+  "Patient ID: 002 | Age: 45 | Weight: 75kg | BP: 130/85 | Diagnosis: Diabetes | Medications: Metformin 500mg twice daily",
+  "Patient ID: 003 | Age: 39 | Weight: 69kg | BP: 120/80 | Diagnosis: Asthma | Medications: Albuterol as needed",
+  "Patient ID: 004 | Age: 60 | Weight: 90kg | BP: 145/95 | Diagnosis: Cardiovascular Disease | Medications: Atorvastatin 20mg daily",
+  "Patient ID: 005 | Age: 50 | Weight: 85kg | BP: 135/85 | Diagnosis: None | Medications: None"
 )
 
-print("Original Data:")
-print(phenotype_data)
+# Function to extract structured data from raw notes
+extract_phenotype_data <- function(notes) {
+  
+  # Define regex patterns
+  id_pattern <- "Patient ID:\\s*(\\d+)"
+  age_pattern <- "Age:\\s*(\\d+)"
+  weight_pattern <- "Weight:\\s*(\\d+)kg"
+  bp_pattern <- "BP:\\s*(\\d+)/(\\d+)"
+  diagnosis_pattern <- "Diagnosis:\\s*([a-zA-Z ]+)"
+  med_pattern <- "Medications:\\s*([a-zA-Z0-9 ]+)"
+  
+  # Extract data using regex
+  data <- data.frame(
+    sample_id = str_extract(notes, id_pattern) %>% str_replace("Patient ID: ", "S"),
+    age = as.numeric(str_extract(notes, age_pattern) %>% str_replace("Age: ", "")),
+    weight_kg = as.numeric(str_extract(notes, weight_pattern) %>% str_replace("Weight: ", "")),
+    systolic = as.numeric(str_extract(notes, bp_pattern) %>% str_extract("\\d+")),
+    diastolic = as.numeric(str_extract(notes, bp_pattern) %>% str_extract("/\\d+") %>% str_replace("/", "")),
+    diagnosis = str_extract(notes, diagnosis_pattern) %>% str_replace("Diagnosis: ", ""),
+    medication = str_extract(notes, med_pattern) %>% str_replace("Medications: ", "")
+  )
+  
+  # Handle missing values
+  data <- data %>%
+    mutate(
+      age = ifelse(is.na(age), median(age, na.rm = TRUE), age),
+      weight_kg = ifelse(is.na(weight_kg), mean(weight_kg, na.rm = TRUE), weight_kg),
+      diagnosis = ifelse(diagnosis == "None", "Unknown", diagnosis),
+      medication = ifelse(medication == "None", "Unknown", medication)
+    )
+  
+  # Map diagnoses to ICD-10 codes
+  diagnosis_mapping <- list(
+    "Hypertension" = "I10",
+    "Diabetes" = "E11",
+    "Asthma" = "J45",
+    "Cardiovascular Disease" = "I25",
+    "Unknown" = "R69"
+  )
+  
+  data$diagnosis_code <- unlist(diagnosis_mapping[data$diagnosis])
+  
+  # One-hot encoding for diagnosis
+  unique_diagnoses <- unique(data$diagnosis)
+  for (d in unique_diagnoses) {
+    col_name <- paste0("diagnosis_", str_replace_all(d, " ", "_"))
+    data[[col_name]] <- ifelse(data$diagnosis == d, 1, 0)
+  }
+  
+  # One-hot encoding for medication
+  unique_meds <- unique(data$medication)
+  for (m in unique_meds) {
+    col_name <- paste0("med_", str_replace_all(m, " ", "_"))
+    data[[col_name]] <- ifelse(data$medication == m, 1, 0)
+  }
+  
+  # Drop original categorical columns (optional)
+  data <- data %>% select(-diagnosis, -medication)
+  
+  # Save to CSV
+  write.csv(data, "phenotype_matrix.csv", row.names = FALSE)
+  
+  print("Phenotype matrix extracted and saved as 'phenotype_matrix.csv'.")
+  
+  return(data)
+}
 
-# Step 2: Data Cleaning
+# Run the function
+structured_data <- extract_phenotype_data(raw_notes)
 
-# Step 2.1: Handle Missing Data - Imputation
-# Replace missing age with the median
-phenotype_data <- phenotype_data %>%
-  mutate(age = ifelse(is.na(age), median(age, na.rm = TRUE), age))
-
-# Replace missing weight with the mean
-phenotype_data <- phenotype_data %>%
-  mutate(weight_kg = ifelse(is.na(weight_kg), mean(weight_kg, na.rm = TRUE), weight_kg))
-
-# Step 2.2: Handle Missing Categorical Data
-# Replace missing diagnosis with 'Unknown'
-phenotype_data <- phenotype_data %>%
-  mutate(diagnosis = replace_na(diagnosis, "Unknown"))
-
-# Step 2.3: Standardize Blood Pressure Readings
-# Split the blood pressure values and calculate averages
-phenotype_data <- phenotype_data %>%
-  separate(blood_pressure_mmHg, into = c("systolic", "diastolic"), sep = "/") %>%
-  mutate(systolic = as.numeric(systolic),
-         diastolic = as.numeric(diastolic))
-
-# Fill missing blood pressure values with means
-phenotype_data <- phenotype_data %>%
-  mutate(systolic = ifelse(is.na(systolic), mean(systolic, na.rm = TRUE), systolic),
-         diastolic = ifelse(is.na(diastolic), mean(diastolic, na.rm = TRUE), diastolic))
-
-print("Cleaned Data:")
-print(phenotype_data)
-
-# Step 3: Data Harmonization
-
-# Harmonize the diagnosis column by standardizing the names to match known ontologies
-# For example, we can map diagnoses to ICD-10 codes
-diagnosis_mapping <- list(
-  "Hypertension" = "I10",  # ICD-10 code for Hypertension
-  "Diabetes" = "E11",      # ICD-10 code for Type 2 Diabetes
-  "Asthma" = "J45",        # ICD-10 code for Asthma
-  "Unknown" = "R69"        # ICD-10 code for Unknown and unspecified causes
-)
-
-# Apply the mapping
-phenotype_data <- phenotype_data %>%
-  mutate(diagnosis_code = unlist(diagnosis_mapping[diagnosis]))
-
-print("Harmonized Data with ICD-10 codes:")
-print(phenotype_data)
-
-# Step 4: Data Annotation
-
-# Mock annotation step - in real scenarios, you might pull from HPO or other resources
-# Here we’ll annotate with dummy clinical notes
-annotations <- data.frame(
-  diagnosis_code = c("I10", "E11", "J45"),
-  clinical_note = c("Chronic condition affecting blood pressure",
-                    "Chronic condition affecting blood sugar regulation",
-                    "Respiratory condition characterized by inflammation of the airways")
-)
-
-# Merge annotations into the phenotype data
-phenotype_data <- left_join(phenotype_data, annotations, by = "diagnosis_code")
-
-print("Annotated Data with Clinical Notes:")
-print(phenotype_data)
-
-# Step 5: Indexing and Export
-
-# Export the cleaned, harmonized, and annotated data for further use
-write.csv(phenotype_data, "cleaned_phenotype_data.csv", row.names = FALSE)
-
-print("Data exported to 'cleaned_phenotype_data.csv'")
+# Preview data
+head(structured_data)
